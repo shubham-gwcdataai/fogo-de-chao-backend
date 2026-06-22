@@ -48,12 +48,15 @@ def _dataset_id(run) -> str:
 
 
 def _apply_date_filter(df: pd.DataFrame, date_col: str, date_from: str, date_to: str) -> pd.DataFrame:
-    """Filter a DataFrame to rows where date_col falls within [date_from, date_to] inclusive."""
+    """Filter a DataFrame to rows where date_col falls within [date_from, date_to] inclusive.
+    The date column is returned timezone-naive (UTC values preserved) so openpyxl can write it."""
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce", utc=True)
     from_dt = pd.Timestamp(date_from, tz="UTC")
     to_dt   = pd.Timestamp(date_to,   tz="UTC") + pd.Timedelta(days=1)  # inclusive end
-    return df[(df[date_col] >= from_dt) & (df[date_col] < to_dt)]
+    df = df[(df[date_col] >= from_dt) & (df[date_col] < to_dt)]
+    df[date_col] = df[date_col].dt.tz_localize(None)  # strip tz — Excel doesn't support tz-aware datetimes
+    return df
 
 
 def scrape_tripadvisor(
