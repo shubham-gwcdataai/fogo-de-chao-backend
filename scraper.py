@@ -1,11 +1,15 @@
 """
 Scraper logic for TripAdvisor, Yelp, Google Maps, and OpenTable reviews via Apify.
-Adapted from the original colab notebook script — same actors, same
-input shapes, just wrapped into reusable functions that return a
-DataFrame + the path of the Excel file they wrote.
+
+IMPORTANT — URL requirements per platform:
+  Google Maps  : Must be a /place/ URL (open the restaurant, copy URL from address bar).
+                 A coordinate viewport (/@lat,lng,z) or search results URL won't work.
+  TripAdvisor  : Must be a /Restaurant_Review- URL.
+  Yelp         : Must be a /biz/ URL.
+  OpenTable    : Must be a /r/ URL (not a /s? search page).
 """
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pandas as pd
 from apify_client import ApifyClient
@@ -30,16 +34,6 @@ def _safe_filename(restaurant_name: str, suffix: str) -> str:
 
 
 def _dataset_id(run) -> str:
-    """
-    Extract the default dataset id from an actor run result.
-
-    apify-client's return shape has changed across major versions:
-      - 1.x returns a plain dict: run["defaultDatasetId"]
-      - 3.x returns a `Run` object: run.default_dataset_id
-
-    This handles both so the code keeps working regardless of which
-    version `pip install` resolves to.
-    """
     if hasattr(run, "default_dataset_id"):
         return run.default_dataset_id
     if isinstance(run, dict):
@@ -48,16 +42,57 @@ def _dataset_id(run) -> str:
 
 
 def _apply_date_filter(df: pd.DataFrame, date_col: str, date_from: str, date_to: str) -> pd.DataFrame:
-    """Filter a DataFrame to rows where date_col falls within [date_from, date_to] inclusive.
-    The date column is returned timezone-naive (UTC values preserved) so openpyxl can write it."""
+    """Filter rows to [date_from, date_to] inclusive. Returns tz-naive datetimes (Excel requirement)."""
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce", utc=True)
     from_dt = pd.Timestamp(date_from, tz="UTC")
-    to_dt   = pd.Timestamp(date_to,   tz="UTC") + pd.Timedelta(days=1)  # inclusive end
+    to_dt   = pd.Timestamp(date_to,   tz="UTC") + pd.Timedelta(days=1)
     df = df[(df[date_col] >= from_dt) & (df[date_col] < to_dt)]
     df[date_col] = df[date_col].dt.tz_localize(None)  # strip tz — Excel doesn't support tz-aware datetimes
     return df
 
+
+# ---------------------------------------------------------------------------
+# URL validators — catch wrong URL types before spending Apify credits
+# ---------------------------------------------------------------------------
+
+def _validate_google_maps_url(url: str):
+    if "/place/" not in url:
+        raise ValueError(
+            "That's not a restaurant page URL. On Google Maps, click on the specific "
+            "restaurant until you see its name, photos, and reviews — then copy the URL "
+            "from the address bar. It should contain '/place/' and look like:\n"
+            "https://www.google.com/maps/place/Burger+King/@22.57,88.36,17z/..."
+        )
+
+def _validate_tripadvisor_url(url: str):
+    if "Restaurant_Review" not in url and "/Restaurant_Review" not in url:
+        raise ValueError(
+            "That doesn't look like a TripAdvisor restaurant page URL. "
+            "It should contain 'Restaurant_Review' and look like:\n"
+            "https://www.tripadvisor.in/Restaurant_Review-g304558-d123456-..."
+        )
+
+def _validate_yelp_url(url: str):
+    if "/biz/" not in url:
+        raise ValueError(
+            "That doesn't look like a Yelp business page URL. "
+            "It should contain '/biz/' and look like:\n"
+            "https://www.yelp.com/biz/burger-king-kolkata"
+        )
+
+def _validate_opentable_url(url: str):
+    if "/s?" in url or "/s/" in url:
+        raise ValueError(
+            "That's an OpenTable search results URL. Open the specific restaurant's page "
+            "and copy that URL instead — it should look like:\n"
+            "https://www.opentable.com/r/burger-king-kolkata"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Scrapers
+# ---------------------------------------------------------------------------
 
 def scrape_tripadvisor(
     restaurant_name: str,
@@ -66,6 +101,7 @@ def scrape_tripadvisor(
     date_from: str = "2021-01-01",
     date_to: str | None = None,
 ) -> dict:
+    _validate_tripadvisor_url(tripadvisor_url)
     client = _get_client()
 
     if date_to is None:
@@ -86,8 +122,6 @@ def scrape_tripadvisor(
     data = list(client.dataset(_dataset_id(run)).iterate_items())
     df = pd.DataFrame(data)
 
-    # TripAdvisor actor doesn't support native date range — filter post-fetch.
-    # Common date column names the actor may return:
     date_col = next((c for c in ["publishedDate", "date", "reviewDate", "createdAt"] if c in df.columns), None)
     if date_col:
         df = _apply_date_filter(df, date_col, date_from, date_to)
@@ -104,6 +138,7 @@ def scrape_yelp(
     date_from: str = "2021-01-01",
     date_to: str | None = None,
 ) -> dict:
+    _validate_yelp_url(yelp_url)
     client = _get_client()
 
     if date_to is None:
@@ -113,7 +148,7 @@ def scrape_yelp(
         "startUrls": [{"url": yelp_url}],
         "maxReviewsPerUrl": 100,
         "language": "",
-        "dateFrom": date_from,  # actor natively supports date filtering
+        "dateFrom": date_from,
         "dateTo": date_to,
     }
 
@@ -137,20 +172,14 @@ def scrape_opentable(
     date_to: str | None = None,
     max_reviews: int = 100,
 ) -> dict:
-    if "/s?" in opentable_url or "opentable.com/s/" in opentable_url:
-        raise ValueError(
-            "That's an OpenTable search results URL, not a restaurant page. "
-            "Open the restaurant from the search results and copy the URL of its own "
-            "page instead (it should look like https://www.opentable.com/r/restaurant-name)."
-        )
+    _validate_opentable_url(opentable_url)
+    client = _get_client()
 
     if date_to is None:
         date_to = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    client = _get_client()
-
     run_input = {
-        "restaurantId": opentable_url,  # accepts a full URL, not just the r/... slug
+        "restaurantId": opentable_url,
         "maxResultsPerRestaurant": max_reviews,
     }
 
@@ -160,8 +189,6 @@ def scrape_opentable(
 
     data = list(client.dataset(_dataset_id(run)).iterate_items())
 
-    # Flatten the nested rating/user objects into top-level columns so the
-    # sheet matches the flat one-row-per-review shape used by the other platforms.
     rows = []
     for item in data:
         rating = item.get("rating", {}) or {}
@@ -185,7 +212,6 @@ def scrape_opentable(
 
     df = pd.DataFrame(rows)
 
-    # Filter by date (submittedAt is the most reliable date field for OpenTable)
     date_col = next((c for c in ["submittedAt", "dinedAt"] if c in df.columns), None)
     if date_col:
         df = _apply_date_filter(df, date_col, date_from, date_to)
@@ -204,6 +230,7 @@ def scrape_google_maps(
     date_to: str | None = None,
     max_reviews: int = 100,
 ) -> dict:
+    _validate_google_maps_url(place_url)
     client = _get_client()
 
     if date_to is None:
@@ -226,7 +253,6 @@ def scrape_google_maps(
     data = list(client.dataset(_dataset_id(run)).iterate_items())
     df = pd.DataFrame(data)
 
-    # Filter by date post-fetch (actor doesn't natively support date range)
     date_col = next((c for c in ["publishedAtDate", "publishAt", "date", "time"] if c in df.columns), None)
     if date_col:
         df = _apply_date_filter(df, date_col, date_from, date_to)
