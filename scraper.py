@@ -100,6 +100,7 @@ def scrape_tripadvisor(
     location: str = "",
     date_from: str = "2021-01-01",
     date_to: str | None = None,
+    max_reviews: int = 500,
 ) -> dict:
     _validate_tripadvisor_url(tripadvisor_url)
     client = _get_client()
@@ -109,7 +110,7 @@ def scrape_tripadvisor(
 
     run_input = {
         "startUrls": [{"url": tripadvisor_url}],
-        "maxItemsPerQuery": 100,
+        "maxItemsPerQuery": max_reviews,
         "scrapeReviewerInfo": True,
         "reviewRatings": ["ALL_REVIEW_RATINGS"],
         "reviewsLanguages": ["ALL_REVIEW_LANGUAGES"],
@@ -137,6 +138,7 @@ def scrape_yelp(
     yelp_url: str,
     date_from: str = "2021-01-01",
     date_to: str | None = None,
+    max_reviews: int = 500,
 ) -> dict:
     _validate_yelp_url(yelp_url)
     client = _get_client()
@@ -146,7 +148,7 @@ def scrape_yelp(
 
     run_input = {
         "startUrls": [{"url": yelp_url}],
-        "maxReviewsPerUrl": 100,
+        "maxReviewsPerUrl": max_reviews,
         "language": "",
         "dateFrom": date_from,
         "dateTo": date_to,
@@ -188,6 +190,17 @@ def scrape_opentable(
         raise RuntimeError("OpenTable actor run failed")
 
     data = list(client.dataset(_dataset_id(run)).iterate_items())
+
+    # If the actor returns nothing, the restaurant is almost certainly not on
+    # OpenTable's booking network (page exists but shows "Not available on OpenTable").
+    # Surface a clear message rather than silently delivering an empty spreadsheet.
+    if not data:
+        raise RuntimeError(
+            "OpenTable returned 0 reviews. This usually means the restaurant is not "
+            "part of OpenTable's booking network — look for 'Not available on OpenTable' "
+            "on the restaurant's page. Only restaurants actively accepting reservations "
+            "through OpenTable have scrapeable reviews."
+        )
 
     rows = []
     for item in data:
