@@ -32,6 +32,9 @@ app.add_middleware(
 
 class ScrapeRequest(BaseModel):
     restaurant_name: str
+    location: str = ""
+    date_from: str = "2021-01-01"
+    date_to: str = ""
     tripadvisor_url: str | None = None
     yelp_url: str | None = None
     google_maps_url: str | None = None
@@ -57,22 +60,34 @@ def scrape(req: ScrapeRequest):
             if platform == "tripadvisor":
                 if not req.tripadvisor_url:
                     raise ValueError("TripAdvisor URL is required.")
-                results.append(scraper.scrape_tripadvisor(req.restaurant_name, req.tripadvisor_url))
+                results.append(scraper.scrape_tripadvisor(
+                    req.restaurant_name, req.tripadvisor_url,
+                    location=req.location, date_from=req.date_from, date_to=req.date_to,
+                ))
 
             elif platform == "yelp":
                 if not req.yelp_url:
                     raise ValueError("Yelp URL is required.")
-                results.append(scraper.scrape_yelp(req.restaurant_name, req.yelp_url))
+                results.append(scraper.scrape_yelp(
+                    req.restaurant_name, req.yelp_url,
+                    date_from=req.date_from, date_to=req.date_to,
+                ))
 
             elif platform == "google_maps":
                 if not req.google_maps_url:
                     raise ValueError("Google Maps URL is required.")
-                results.append(scraper.scrape_google_maps(req.restaurant_name, req.google_maps_url))
+                results.append(scraper.scrape_google_maps(
+                    req.restaurant_name, req.google_maps_url,
+                    location=req.location, date_from=req.date_from, date_to=req.date_to,
+                ))
 
             elif platform == "open_table":
                 if not req.open_table_url:
                     raise ValueError("OpenTable URL is required.")
-                results.append(scraper.scrape_opentable(req.restaurant_name, req.open_table_url))
+                results.append(scraper.scrape_opentable(
+                    req.restaurant_name, req.open_table_url,
+                    date_from=req.date_from, date_to=req.date_to,
+                ))
 
             else:
                 raise ValueError(f"Unknown platform: {platform}")
